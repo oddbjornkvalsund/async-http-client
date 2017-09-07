@@ -1,29 +1,32 @@
 package example;
 
 import io.netty.bootstrap.Bootstrap;
-import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
-import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelPipeline;
+import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
+import io.netty.handler.codec.http.DefaultFullHttpRequest;
+import io.netty.handler.codec.http.FullHttpResponse;
+import io.netty.handler.codec.http.HttpContent;
+import io.netty.handler.codec.http.HttpHeaderNames;
+import io.netty.handler.codec.http.HttpHeaders;
+import io.netty.handler.codec.http.HttpMethod;
+import io.netty.handler.codec.http.HttpResponse;
+import io.netty.handler.codec.http.HttpVersion;
+import io.netty.handler.codec.http.LastHttpContent;
 import io.netty.handler.codec.http2.DefaultHttp2Connection;
-import io.netty.handler.codec.http2.DefaultHttp2ConnectionDecoder;
-import io.netty.handler.codec.http2.DefaultHttp2ConnectionEncoder;
-import io.netty.handler.codec.http2.DefaultHttp2FrameReader;
-import io.netty.handler.codec.http2.DefaultHttp2FrameWriter;
-import io.netty.handler.codec.http2.DefaultHttp2Headers;
-import io.netty.handler.codec.http2.DefaultHttp2HeadersFrame;
-import io.netty.handler.codec.http2.Http2ConnectionHandler;
-import io.netty.handler.codec.http2.Http2ConnectionHandlerBuilder;
-import io.netty.handler.codec.http2.Http2Exception;
-import io.netty.handler.codec.http2.Http2FrameAdapter;
-import io.netty.handler.codec.http2.Http2Headers;
+import io.netty.handler.codec.http2.DelegatingDecompressorFrameListener;
+import io.netty.handler.codec.http2.Http2FrameLogger;
 import io.netty.handler.codec.http2.Http2SecurityUtil;
+import io.netty.handler.codec.http2.HttpConversionUtil;
+import io.netty.handler.codec.http2.HttpToHttp2ConnectionHandler;
+import io.netty.handler.codec.http2.HttpToHttp2ConnectionHandlerBuilder;
+import io.netty.handler.codec.http2.InboundHttp2ToHttpAdapter;
 import io.netty.handler.ssl.ApplicationProtocolConfig;
 import io.netty.handler.ssl.ApplicationProtocolNames;
 import io.netty.handler.ssl.OpenSsl;
@@ -39,58 +42,47 @@ import java.util.Collections;
 import java.util.Map;
 
 import static io.netty.channel.ChannelFutureListener.FIRE_EXCEPTION_ON_FAILURE;
+import static io.netty.handler.logging.LogLevel.INFO;
 
 public class AsyncHttpClient {
 
     private final Channel channel;
+    private final boolean decompressBody;
+    private final String host;
+    private final int port;
 
     public static void main(String[] args) throws InterruptedException {
-        final AsyncHttpClient client = new AsyncHttpClient("google.com", 443);
+        final AsyncHttpClient client = new AsyncHttpClient("google.com", 443, true);
         client.run("GET", "/", Collections.emptyMap());
         Thread.sleep(10000);
     }
 
-    AsyncHttpClient(String host, int port) throws InterruptedException {
+    AsyncHttpClient(String host, int port, boolean decompressBody) throws InterruptedException {
+        this.host = host;
+        this.port = port;
+        this.decompressBody = decompressBody;
+
         final Bootstrap bootstrap = new Bootstrap()
                 .group(new NioEventLoopGroup())
                 .channel(NioSocketChannel.class)
                 .handler(new ChannelInitializer<SocketChannel>() {
                     @Override
                     protected void initChannel(SocketChannel ch) throws Exception {
-                        final Http2FrameAdapter adapter = new Http2FrameAdapter() {
-
-                            @Override
-                            public void onHeadersRead(ChannelHandlerContext ctx, int streamId, Http2Headers headers, int padding, boolean endStream) throws Http2Exception {
-                                System.out.println("onHeadersRead(ctx, streamId, headers, padding, endStream)");
-                                super.onHeadersRead(ctx, streamId, headers, padding, endStream);
-                            }
-
-                            @Override
-                            public void onHeadersRead(ChannelHandlerContext ctx, int streamId, Http2Headers headers, int streamDependency, short weight, boolean exclusive, int padding, boolean endStream) throws Http2Exception {
-                                System.out.println("onHeadersRead(ctx, streamId, headers, streamDependency, weight, exclusive, padding, endStream)");
-                                super.onHeadersRead(ctx, streamId, headers, streamDependency, weight, exclusive, padding, endStream);
-                            }
-
-                            @Override
-                            public int onDataRead(ChannelHandlerContext ctx, int streamId, ByteBuf data, int padding, boolean endOfStream) throws Http2Exception {
-                                System.out.println("onDataRead(ctx, streamId, data, padding, endOfStream)");
-                                return super.onDataRead(ctx, streamId, data, padding, endOfStream);
-                            }
-                        };
-
+                        final Http2FrameLogger frameLogger = new Http2FrameLogger(INFO, AsyncHttpClient.class);
                         final DefaultHttp2Connection connection = new DefaultHttp2Connection(false);
-                        final DefaultHttp2FrameReader frameReader = new DefaultHttp2FrameReader();
-                        final DefaultHttp2FrameWriter frameWriter = new DefaultHttp2FrameWriter();
-                        final DefaultHttp2ConnectionEncoder encoder = new DefaultHttp2ConnectionEncoder(connection, frameWriter);
-                        final DefaultHttp2ConnectionDecoder decoder = new DefaultHttp2ConnectionDecoder(connection, encoder, frameReader);
-                        final Http2ConnectionHandler connectionHandler = new Http2ConnectionHandlerBuilder()
-                                .codec(decoder, encoder)
-                                .frameListener(adapter)
+                        final InboundHttp2ToHttpAdapter adapter = new DetailedInboundHttp2ToHttpAdapter(connection);
+                        final HttpToHttp2ConnectionHandler connectionHandler = new HttpToHttp2ConnectionHandlerBuilder()
+                                .frameListener(decompressBody ? new DelegatingDecompressorFrameListener(connection, adapter) : adapter)
+                                .frameLogger(frameLogger)
+                                .connection(connection)
                                 .build();
+
+                        final ResponseHandler responseHandler = new ResponseHandler();
 
                         final ChannelPipeline pipeline = ch.pipeline();
                         pipeline.addLast(createSslHandler(ch));
                         pipeline.addLast(connectionHandler);
+                        pipeline.addLast(responseHandler);
                     }
                 });
 
@@ -98,22 +90,41 @@ public class AsyncHttpClient {
         this.channel = channelFuture.sync().channel();
     }
 
-    void run(String method, String path, Map<String, String> headerMap) {
-        final DefaultHttp2Headers headers = new DefaultHttp2Headers(true);
-        headers.scheme("https");
-        headers.method(method);
-        headers.path(path);
+    void run(String method, String path, Map<String, String> headerMap) throws InterruptedException {
+        final DefaultFullHttpRequest req = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.valueOf(method), path);
+        final HttpHeaders headers = req.headers();
+        headers.add(HttpHeaderNames.CONTENT_LENGTH, "0");
+        headers.add(HttpHeaderNames.HOST, this.host);
+        headers.add(HttpConversionUtil.ExtensionHeaderNames.SCHEME.text(), "https");
+
         for (Map.Entry<String, String> header : headerMap.entrySet()) {
             headers.add(header.getKey(), header.getValue());
         }
 
-        final DefaultHttp2HeadersFrame frame = new DefaultHttp2HeadersFrame(headers, false);
         try {
-            channel.writeAndFlush(frame)
-                    .addListener(FIRE_EXCEPTION_ON_FAILURE)
-                    .sync();
+            channel.writeAndFlush(req).addListener(FIRE_EXCEPTION_ON_FAILURE).sync();
         } catch (Exception e) {
             throw new RuntimeException(e);
+        }
+    }
+
+    class ResponseHandler extends SimpleChannelInboundHandler<Object> {
+
+        @Override
+        protected void channelRead0(ChannelHandlerContext ctx, Object msg) throws Exception {
+            if (msg instanceof FullHttpResponse) {
+                System.out.println("Handler got FullHttpResponse: " + msg);
+            } else if (msg instanceof HttpResponse) {
+                System.out.println("Handler got HttpResponse: " + msg);
+            } else if (msg instanceof HttpHeaders) {
+                System.out.println("Handler got HttpHeaders: " + msg);
+            } else if (msg instanceof LastHttpContent) {
+                System.out.println("Handler got LastHttpContent: " + msg);
+            } else if (msg instanceof HttpContent) {
+                System.out.println("Handler got HttpContent: " + msg);
+            } else {
+                System.out.println("Handler got unknown: " + msg);
+            }
         }
     }
 
