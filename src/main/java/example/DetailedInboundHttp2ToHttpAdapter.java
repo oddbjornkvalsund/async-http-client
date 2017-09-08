@@ -26,14 +26,16 @@ public class DetailedInboundHttp2ToHttpAdapter extends InboundHttp2ToHttpAdapter
     @Override
     public void onHeadersRead(ChannelHandlerContext ctx, int streamId, Http2Headers headers, int padding, boolean endOfStream) throws Http2Exception {
         super.onHeadersRead(ctx, streamId, headers, padding, endOfStream);
-
+//        System.out.println("onHeadersRead, streamId: " + streamId);
         final FullHttpResponse fullHttpResponse = HttpConversionUtil.toHttpResponse(streamId, headers, ByteBufAllocator.DEFAULT, false);
 
         final HttpResponse httpResponse = new DefaultHttpResponse(fullHttpResponse.protocolVersion(), fullHttpResponse.status());
-        ctx.fireChannelRead(httpResponse);
+//        System.out.println("onHeadersRead firing HttpResponseWithStreamId with streamId: " + streamId);
+        ctx.fireChannelRead(new HttpResponseWithStreamId(httpResponse, streamId));
 
         final HttpHeaders httpHeaders = fullHttpResponse.headers();
-        ctx.fireChannelRead(httpHeaders);
+//        System.out.println("onHeadersRead firing HttpHeadersWithStreamId with streamId: " + streamId);
+        ctx.fireChannelRead(new HttpHeadersWithStreamId(httpHeaders, streamId, endOfStream));
 
         ctx.flush();
     }
@@ -45,12 +47,13 @@ public class DetailedInboundHttp2ToHttpAdapter extends InboundHttp2ToHttpAdapter
 
     @Override
     public int onDataRead(ChannelHandlerContext ctx, int streamId, ByteBuf data, int padding, boolean endOfStream) throws Http2Exception {
-        final int bytesProcessed = super.onDataRead(ctx, streamId, data, padding, endOfStream);
+//        System.out.println("onDataRead, streamId: " + streamId);
 
         final DefaultHttpContent httpContent = endOfStream ? new DefaultLastHttpContent(data.retain()) : new DefaultHttpContent(data.retain());
-        ctx.fireChannelRead(httpContent);
+//        System.out.println("onDataRead firing HttpContentWithStreamId with streamId: " + streamId);
+        ctx.fireChannelRead(new HttpContentWithStreamId(httpContent, streamId, endOfStream));
         ctx.flush();
 
-        return bytesProcessed;
+        return super.onDataRead(ctx, streamId, data, padding, endOfStream);
     }
 }
