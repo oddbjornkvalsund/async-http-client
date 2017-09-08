@@ -56,7 +56,7 @@ public class AsyncHttpClient implements Closeable {
 
     enum Version {
         HTTP_1_1,
-        HTTP_2;
+        HTTP_2
     }
 
     private final static int maxContentLength = 10 * 1024 * 1024;
@@ -160,17 +160,6 @@ public class AsyncHttpClient implements Closeable {
         } catch (InterruptedException ie) {
             throw new RuntimeException(ie);
         }
-    }
-
-    private Promise<FullHttpResponse> run(String method, String path, Map<String, String> headerMap, byte[] body) {
-        return run(method, path, headerMap, body,
-                r -> {
-                },
-                (h, b) -> {
-                },
-                (c, b) -> {
-                }
-        );
     }
 
     private Promise<FullHttpResponse> run(String method, String path, Map<String, String> headerMap, byte[] body, Consumer<HttpResponse> onResponse, BiConsumer<HttpHeaders, Boolean> onHeaders, BiConsumer<HttpContent, Boolean> onContent) {
