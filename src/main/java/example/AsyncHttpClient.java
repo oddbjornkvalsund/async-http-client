@@ -3,6 +3,7 @@ package example;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
+import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelPipeline;
@@ -38,13 +39,15 @@ import io.netty.handler.ssl.SupportedCipherSuiteFilter;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 
 import javax.net.ssl.SSLException;
+import java.io.Closeable;
+import java.io.IOException;
 import java.util.Collections;
 import java.util.Map;
 
 import static io.netty.channel.ChannelFutureListener.FIRE_EXCEPTION_ON_FAILURE;
 import static io.netty.handler.logging.LogLevel.INFO;
 
-public class AsyncHttpClient {
+public class AsyncHttpClient implements Closeable {
 
     private final Channel channel;
     private final boolean decompressBody;
@@ -54,6 +57,7 @@ public class AsyncHttpClient {
     public static void main(String[] args) throws InterruptedException {
         final AsyncHttpClient client = new AsyncHttpClient("google.com", 443, true);
         client.run("GET", "/", Collections.emptyMap());
+        client.run("GET", "/foo", Collections.emptyMap());
         Thread.sleep(10000);
     }
 
@@ -102,13 +106,40 @@ public class AsyncHttpClient {
         }
 
         try {
+            // TODO: How do we get the streamid for the request?
+            // See: http://unrestful.io/2015/10/10/http2-java-client-examples.html
             channel.writeAndFlush(req).addListener(FIRE_EXCEPTION_ON_FAILURE).sync();
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
     }
 
+    @Override
+    public void close() throws IOException {
+        try {
+            channel.close().sync();
+        } catch (InterruptedException e) {
+            throw new IOException("Interrupted while closing channel!", e);
+        }
+    }
+
     class ResponseHandler extends SimpleChannelInboundHandler<Object> {
+
+        @Override
+        public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+            super.channelInactive(ctx);
+            System.out.println("Inactive");
+            System.out.println("Is writable: " + ctx.channel().isWritable());
+            System.out.println("Is open: " + ctx.channel().isOpen());
+        }
+
+        @Override
+        public void channelUnregistered(ChannelHandlerContext ctx) throws Exception {
+            super.channelUnregistered(ctx);
+            System.out.println("Unregistered");
+            System.out.println("Is writable: " + ctx.channel().isWritable());
+            System.out.println("Is open: " + ctx.channel().isOpen());
+        }
 
         @Override
         protected void channelRead0(ChannelHandlerContext ctx, Object msg) throws Exception {
