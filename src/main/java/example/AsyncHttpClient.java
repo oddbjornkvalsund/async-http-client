@@ -7,14 +7,11 @@ import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelPipeline;
-import io.netty.channel.ChannelPromise;
-import io.netty.channel.DefaultChannelPromise;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.http.DefaultFullHttpRequest;
-import io.netty.handler.codec.http.DefaultFullHttpResponse;
 import io.netty.handler.codec.http.FullHttpResponse;
 import io.netty.handler.codec.http.HttpContent;
 import io.netty.handler.codec.http.HttpHeaderNames;
@@ -40,16 +37,12 @@ import io.netty.handler.ssl.SslProvider;
 import io.netty.handler.ssl.SupportedCipherSuiteFilter;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.netty.util.AsciiString;
-import io.netty.util.concurrent.DefaultPromise;
 import io.netty.util.concurrent.Promise;
 
 import javax.net.ssl.SSLException;
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.Map;
-import java.util.concurrent.Future;
-import java.util.concurrent.FutureTask;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
@@ -65,38 +58,38 @@ public class AsyncHttpClient implements Closeable {
 
     private final NioEventLoopGroup group;
     private final Channel channel;
-    private final boolean decompressBody;
     private final String host;
 
     private AtomicInteger streamIdCounter = new AtomicInteger(3);
 
     public static void main(String[] args) throws InterruptedException, IOException {
         final byte[] emptyBody = new byte[0];
-        final AsyncHttpClient client = new AsyncHttpClient("google.com", 443, true);
 
-        try {
+        try (final AsyncHttpClient client = new AsyncHttpClient("google.com", 443, true)) {
             final Promise<FullHttpResponse> future1 = client.run("GET", "/", emptyMap(), emptyBody,
                     response -> {
                         System.out.println("Got response for GET /: " + response);
                     },
-                    headers -> {
+                    (headers, isLast) -> {
                         System.out.println("Got headers for GET /: " + headers);
+                        System.out.println("Got headers.isLast for GET /: " + isLast);
                     },
                     (content, isLast) -> {
                         System.out.println("Got content for GET /: " + content);
-                        System.out.println("Got isLast for GET /: " + isLast);
+                        System.out.println("Got content.isLast for GET /: " + isLast);
                     }
             );
             final Promise<FullHttpResponse> future2 = client.run("GET", "/foo", emptyMap(), emptyBody,
                     response -> {
                         System.out.println("Got response for GET /foo: " + response);
                     },
-                    headers -> {
+                    (headers, isLast) -> {
                         System.out.println("Got headers for GET /foo: " + headers);
+                        System.out.println("Got headers.isLast for GET /foo: " + isLast);
                     },
                     (content, isLast) -> {
                         System.out.println("Got content for GET /foo: " + content);
-                        System.out.println("Got isLast for GET /foo: " + isLast);
+                        System.out.println("Got content.isLast for GET /foo: " + isLast);
                     }
             );
 
@@ -117,14 +110,11 @@ public class AsyncHttpClient implements Closeable {
             } else {
                 System.out.println("Boo for future 2!");
             }
-        } finally {
-            client.close();
         }
     }
 
     public AsyncHttpClient(String host, int port, boolean decompressBody) {
         this.host = host;
-        this.decompressBody = decompressBody;
         this.group = new NioEventLoopGroup();
 
         final Bootstrap bootstrap = new Bootstrap()
@@ -160,7 +150,18 @@ public class AsyncHttpClient implements Closeable {
         return streamIdCounter.getAndAdd(2);
     }
 
-    private Promise<FullHttpResponse> run(String method, String path, Map<String, String> headerMap, byte[] body, Consumer<HttpResponse> onResponse, Consumer<HttpHeaders> onHeaders, BiConsumer<HttpContent, Boolean> onContent) {
+    private Promise<FullHttpResponse> run(String method, String path, Map<String, String> headerMap, byte[] body) {
+        return run(method, path, headerMap, body,
+                r -> {
+                },
+                (h, b) -> {
+                },
+                (c, b) -> {
+                }
+        );
+    }
+
+    private Promise<FullHttpResponse> run(String method, String path, Map<String, String> headerMap, byte[] body, Consumer<HttpResponse> onResponse, BiConsumer<HttpHeaders, Boolean> onHeaders, BiConsumer<HttpContent, Boolean> onContent) {
         final DefaultFullHttpRequest req = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.valueOf(method), path, Unpooled.wrappedBuffer(body));
         final HttpHeaders headers = req.headers();
         headers.add(HttpHeaderNames.HOST, this.host);
@@ -192,11 +193,11 @@ public class AsyncHttpClient implements Closeable {
 
         private final int streamId;
         private final Consumer<HttpResponse> onResponse;
-        private final Consumer<HttpHeaders> onHeaders;
+        private final BiConsumer<HttpHeaders, Boolean> onHeaders;
         private final BiConsumer<HttpContent, Boolean> onContent;
         private final Promise<FullHttpResponse> promise;
 
-        ResponseHandler(int streamId, Consumer<HttpResponse> onResponse, Consumer<HttpHeaders> onHeaders, BiConsumer<HttpContent, Boolean> onContent, Promise<FullHttpResponse> promise) {
+        ResponseHandler(int streamId, Consumer<HttpResponse> onResponse, BiConsumer<HttpHeaders, Boolean> onHeaders, BiConsumer<HttpContent, Boolean> onContent, Promise<FullHttpResponse> promise) {
             this.streamId = streamId;
             this.onResponse = onResponse;
             this.onHeaders = onHeaders;
@@ -206,7 +207,6 @@ public class AsyncHttpClient implements Closeable {
 
         @Override
         protected void channelRead0(ChannelHandlerContext ctx, Object msg) throws Exception {
-
             if (msg instanceof HttpResponseWithStreamId) {
                 final HttpResponseWithStreamId objectWithStreamId = (HttpResponseWithStreamId) msg;
 
@@ -219,7 +219,7 @@ public class AsyncHttpClient implements Closeable {
                 final HttpHeadersWithStreamId objectWithStreamId = (HttpHeadersWithStreamId) msg;
 
                 if (objectWithStreamId.streamId == streamId) {
-                    onHeaders.accept(objectWithStreamId.httpHeaders);
+                    onHeaders.accept(objectWithStreamId.httpHeaders, objectWithStreamId.noMoreContent);
                 } else {
                     ctx.fireChannelRead(msg);
                 }
