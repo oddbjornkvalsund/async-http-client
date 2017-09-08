@@ -17,9 +17,7 @@ import io.netty.handler.codec.http2.InboundHttp2ToHttpAdapter;
 
 public class DetailedInboundHttp2ToHttpAdapter extends InboundHttp2ToHttpAdapter {
 
-    private static final int maxContentLength = 10 * 1024 * 1024;
-
-    DetailedInboundHttp2ToHttpAdapter(Http2Connection connection) {
+    DetailedInboundHttp2ToHttpAdapter(Http2Connection connection, int maxContentLength) {
         super(connection, maxContentLength, false, false);
     }
 

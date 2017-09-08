@@ -60,9 +60,10 @@ public class AsyncHttpClient implements Closeable {
 
     enum Version {
         HTTP_1_1,
-        HTTP_2
+        HTTP_2;
     }
 
+    private final static int maxContentLength = 10 * 1024 * 1024;
     private final static AsciiString schemeHeaderName = HttpConversionUtil.ExtensionHeaderNames.SCHEME.text();
     private final static AsciiString streamIdHeaderName = HttpConversionUtil.ExtensionHeaderNames.STREAM_ID.text();
 
@@ -139,14 +140,14 @@ public class AsyncHttpClient implements Closeable {
 
                         if (version == Version.HTTP_1_1) {
                             pipeline.addLast(new HttpClientCodec());
-                            pipeline.addLast(new DetailedHttpObjectAggregator(10 * 1024 * 1024));
+                            pipeline.addLast(new DetailedHttpObjectAggregator(maxContentLength));
                             if (decompressBody) {
                                 pipeline.addLast(new HttpContentDecompressor());
                             }
                         } else if (version == Version.HTTP_2) {
                             final Http2FrameLogger frameLogger = new Http2FrameLogger(INFO, AsyncHttpClient.class);
                             final DefaultHttp2Connection connection = new DefaultHttp2Connection(false);
-                            final InboundHttp2ToHttpAdapter adapter = new DetailedInboundHttp2ToHttpAdapter(connection);
+                            final InboundHttp2ToHttpAdapter adapter = new DetailedInboundHttp2ToHttpAdapter(connection, maxContentLength);
                             final HttpToHttp2ConnectionHandler connectionHandler = new HttpToHttp2ConnectionHandlerBuilder()
                                     .frameListener(decompressBody ? new DelegatingDecompressorFrameListener(connection, adapter) : adapter)
                                     .frameLogger(frameLogger)
