@@ -13,12 +13,16 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.http.DefaultFullHttpRequest;
 import io.netty.handler.codec.http.FullHttpResponse;
+import io.netty.handler.codec.http.HttpClientCodec;
 import io.netty.handler.codec.http.HttpContent;
+import io.netty.handler.codec.http.HttpContentDecompressor;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpMethod;
+import io.netty.handler.codec.http.HttpObject;
 import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.codec.http.HttpVersion;
+import io.netty.handler.codec.http.LastHttpContent;
 import io.netty.handler.codec.http2.DefaultHttp2Connection;
 import io.netty.handler.codec.http2.DelegatingDecompressorFrameListener;
 import io.netty.handler.codec.http2.Http2FrameLogger;
@@ -54,66 +58,63 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
 public class AsyncHttpClient implements Closeable {
 
+    enum Version {
+        HTTP_1_1,
+        HTTP_2
+    }
+
     private final static AsciiString streamIdHeaderName = HttpConversionUtil.ExtensionHeaderNames.STREAM_ID.text();
 
     private final NioEventLoopGroup group;
     private final Channel channel;
+    private final Version version;
     private final String host;
 
     private AtomicInteger streamIdCounter = new AtomicInteger(3);
 
     public static void main(String[] args) throws InterruptedException, IOException {
         final byte[] emptyBody = new byte[0];
+        for (Version version : Version.values()) {
+            try (final AsyncHttpClient client = new AsyncHttpClient(version, "google.com", 443, true)) {
+                final Promise<FullHttpResponse> future1 = client.run("GET", "/", emptyMap(), emptyBody,
+                        response -> {
+                            System.out.format("Got %s response for GET /: %s\n", version, response);
+                        },
+                        (headers, isLast) -> {
+                            System.out.format("Got %s headers for GET /: %s\n", version, headers);
+                            System.out.format("Got %s headers.isLast for GET /: %s\n", version, isLast);
+                        },
+                        (content, isLast) -> {
+                            System.out.format("Got %s content for GET /: %s\n", version, content);
+                            System.out.format("Got %s content.isLast for GET /: %s\n", version, isLast);
+                        }
+                );
 
-        try (final AsyncHttpClient client = new AsyncHttpClient("google.com", 443, true)) {
-            final Promise<FullHttpResponse> future1 = client.run("GET", "/", emptyMap(), emptyBody,
-                    response -> {
-                        System.out.println("Got response for GET /: " + response);
-                    },
-                    (headers, isLast) -> {
-                        System.out.println("Got headers for GET /: " + headers);
-                        System.out.println("Got headers.isLast for GET /: " + isLast);
-                    },
-                    (content, isLast) -> {
-                        System.out.println("Got content for GET /: " + content);
-                        System.out.println("Got content.isLast for GET /: " + isLast);
-                    }
-            );
-            final Promise<FullHttpResponse> future2 = client.run("GET", "/foo", emptyMap(), emptyBody,
-                    response -> {
-                        System.out.println("Got response for GET /foo: " + response);
-                    },
-                    (headers, isLast) -> {
-                        System.out.println("Got headers for GET /foo: " + headers);
-                        System.out.println("Got headers.isLast for GET /foo: " + isLast);
-                    },
-                    (content, isLast) -> {
-                        System.out.println("Got content for GET /foo: " + content);
-                        System.out.println("Got content.isLast for GET /foo: " + isLast);
-                    }
-            );
+                final Promise<FullHttpResponse> future2 = client.run("GET", "/foo", emptyMap(), emptyBody,
+                        response -> {
+                            System.out.format("Got %s response for GET /foo: %s\n", version, response);
+                        },
+                        (headers, isLast) -> {
+                            System.out.format("Got %s headers for GET /foo: %s\n", version, headers);
+                            System.out.format("Got %s headers.isLast for GET /foo: %s\n", version, isLast);
+                        },
+                        (content, isLast) -> {
+                            System.out.format("Got %s content for GET /foo: %s\n", version, content);
+                            System.out.format("Got %s content.isLast for GET /foo: %s\n", version, isLast);
+                        }
+                );
 
-            System.out.println("Waiting for future 1 sync...");
-            final Promise<FullHttpResponse> result1 = future1.sync();
-            System.out.println("Got future 1 sync!");
-            if (result1.isSuccess()) {
-                System.out.println("Hurray for future 1!");
-            } else {
-                System.out.println("Boo for future 1!");
-            }
+                final Promise<FullHttpResponse> result1 = future1.sync();
+                System.out.format("Got %s full content for GET /: %s\n", version, result1.getNow());
 
-            System.out.println("Waiting for future 2 sync...");
-            final Promise<FullHttpResponse> result2 = future2.sync();
-            System.out.println("Got future 2 sync!");
-            if (result2.isSuccess()) {
-                System.out.println("Hurray for future 2!");
-            } else {
-                System.out.println("Boo for future 2!");
+                final Promise<FullHttpResponse> result2 = future2.sync();
+                System.out.format("Got %s full content for GET /foo: %s\n", version, result2.getNow());
             }
         }
     }
 
-    public AsyncHttpClient(String host, int port, boolean decompressBody) {
+    public AsyncHttpClient(Version version, String host, int port, boolean decompressBody) {
+        this.version = version;
         this.host = host;
         this.group = new NioEventLoopGroup();
 
@@ -123,18 +124,28 @@ public class AsyncHttpClient implements Closeable {
                 .handler(new ChannelInitializer<SocketChannel>() {
                     @Override
                     protected void initChannel(SocketChannel ch) throws Exception {
-                        final Http2FrameLogger frameLogger = new Http2FrameLogger(INFO, AsyncHttpClient.class);
-                        final DefaultHttp2Connection connection = new DefaultHttp2Connection(false);
-                        final InboundHttp2ToHttpAdapter adapter = new DetailedInboundHttp2ToHttpAdapter(connection);
-                        final HttpToHttp2ConnectionHandler connectionHandler = new HttpToHttp2ConnectionHandlerBuilder()
-                                .frameListener(decompressBody ? new DelegatingDecompressorFrameListener(connection, adapter) : adapter)
-                                .frameLogger(frameLogger)
-                                .connection(connection)
-                                .build();
-
                         final ChannelPipeline pipeline = ch.pipeline();
-                        pipeline.addLast(createSslHandler(ch));
-                        pipeline.addLast(connectionHandler);
+
+                        if (version == Version.HTTP_1_1) {
+                            pipeline.addLast(createSslHandler(ch));
+                            pipeline.addLast(new HttpClientCodec());
+                            pipeline.addLast(new DetailedHttpObjectAggregator(10 * 1024 * 1024));
+                            if (decompressBody) {
+                                pipeline.addLast(new HttpContentDecompressor());
+                            }
+                        } else if (version == Version.HTTP_2) {
+                            final Http2FrameLogger frameLogger = new Http2FrameLogger(INFO, AsyncHttpClient.class);
+                            final DefaultHttp2Connection connection = new DefaultHttp2Connection(false);
+                            final InboundHttp2ToHttpAdapter adapter = new DetailedInboundHttp2ToHttpAdapter(connection);
+                            final HttpToHttp2ConnectionHandler connectionHandler = new HttpToHttp2ConnectionHandlerBuilder()
+                                    .frameListener(decompressBody ? new DelegatingDecompressorFrameListener(connection, adapter) : adapter)
+                                    .frameLogger(frameLogger)
+                                    .connection(connection)
+                                    .build();
+
+                            pipeline.addLast(createSslHandler(ch));
+                            pipeline.addLast(connectionHandler);
+                        }
                     }
                 });
 
@@ -144,10 +155,6 @@ public class AsyncHttpClient implements Closeable {
         } catch (InterruptedException ie) {
             throw new RuntimeException(ie);
         }
-    }
-
-    private int getNextStreamId() {
-        return streamIdCounter.getAndAdd(2);
     }
 
     private Promise<FullHttpResponse> run(String method, String path, Map<String, String> headerMap, byte[] body) {
@@ -172,11 +179,17 @@ public class AsyncHttpClient implements Closeable {
             headers.add(header.getKey(), header.getValue());
         }
 
-        final int nextStreamId = getNextStreamId();
         final Promise<FullHttpResponse> promise = channel.pipeline().firstContext().executor().newPromise();
-        channel.pipeline().addLast(new ResponseHandler(nextStreamId, onResponse, onHeaders, onContent, promise));
-        channel.writeAndFlush(req).addListener(FIRE_EXCEPTION_ON_FAILURE);
-        return promise;
+
+        if (version == Version.HTTP_1_1) {
+            channel.pipeline().addLast(new Http1ResponseHandler(onResponse, onHeaders, onContent, promise));
+            channel.writeAndFlush(req).addListener(FIRE_EXCEPTION_ON_FAILURE).syncUninterruptibly();
+            return promise.syncUninterruptibly();
+        } else {
+            channel.pipeline().addLast(new Http2ResponseHandler(getNextStreamId(), onResponse, onHeaders, onContent, promise));
+            channel.writeAndFlush(req).addListener(FIRE_EXCEPTION_ON_FAILURE);
+            return promise;
+        }
     }
 
     @Override
@@ -189,7 +202,43 @@ public class AsyncHttpClient implements Closeable {
         }
     }
 
-    class ResponseHandler extends SimpleChannelInboundHandler<Object> {
+    class Http1ResponseHandler extends SimpleChannelInboundHandler<HttpObject> {
+
+        private final Consumer<HttpResponse> onResponse;
+        private final BiConsumer<HttpHeaders, Boolean> onHeaders;
+        private final BiConsumer<HttpContent, Boolean> onContent;
+        private final Promise<FullHttpResponse> promise;
+
+        Http1ResponseHandler(Consumer<HttpResponse> onResponse, BiConsumer<HttpHeaders, Boolean> onHeaders, BiConsumer<HttpContent, Boolean> onContent, Promise<FullHttpResponse> promise) {
+            this.onResponse = onResponse;
+            this.onHeaders = onHeaders;
+            this.onContent = onContent;
+            this.promise = promise;
+        }
+
+        @Override
+        protected void channelRead0(ChannelHandlerContext ctx, HttpObject msg) throws Exception {
+            if (msg instanceof FullHttpResponse) {
+                final FullHttpResponse fullHttpResponse = (FullHttpResponse) msg;
+                channel.pipeline().remove(this);
+                promise.setSuccess(fullHttpResponse); // retain?
+            } else if (msg instanceof HttpResponse) {
+                final HttpResponse httpResponse = (HttpResponse) msg;
+                onResponse.accept(httpResponse);
+            } else if (msg instanceof HttpHeaders) {
+                final HttpHeaders httpHeaders = (HttpHeaders) msg;
+                onHeaders.accept(httpHeaders, true);
+            } else if (msg instanceof LastHttpContent) {
+                final LastHttpContent lastHttpContent = (LastHttpContent) msg;
+                onContent.accept(lastHttpContent, true);
+            } else if (msg instanceof HttpContent) {
+                final HttpContent httpContent = (HttpContent) msg;
+                onContent.accept(httpContent, false);
+            }
+        }
+    }
+
+    class Http2ResponseHandler extends SimpleChannelInboundHandler<Object> {
 
         private final int streamId;
         private final Consumer<HttpResponse> onResponse;
@@ -197,7 +246,7 @@ public class AsyncHttpClient implements Closeable {
         private final BiConsumer<HttpContent, Boolean> onContent;
         private final Promise<FullHttpResponse> promise;
 
-        ResponseHandler(int streamId, Consumer<HttpResponse> onResponse, BiConsumer<HttpHeaders, Boolean> onHeaders, BiConsumer<HttpContent, Boolean> onContent, Promise<FullHttpResponse> promise) {
+        Http2ResponseHandler(int streamId, Consumer<HttpResponse> onResponse, BiConsumer<HttpHeaders, Boolean> onHeaders, BiConsumer<HttpContent, Boolean> onContent, Promise<FullHttpResponse> promise) {
             this.streamId = streamId;
             this.onResponse = onResponse;
             this.onHeaders = onHeaders;
@@ -209,7 +258,6 @@ public class AsyncHttpClient implements Closeable {
         protected void channelRead0(ChannelHandlerContext ctx, Object msg) throws Exception {
             if (msg instanceof HttpResponseWithStreamId) {
                 final HttpResponseWithStreamId objectWithStreamId = (HttpResponseWithStreamId) msg;
-
                 if (objectWithStreamId.streamId == streamId) {
                     onResponse.accept(objectWithStreamId.httpResponse);
                 } else {
@@ -217,7 +265,6 @@ public class AsyncHttpClient implements Closeable {
                 }
             } else if (msg instanceof HttpHeadersWithStreamId) {
                 final HttpHeadersWithStreamId objectWithStreamId = (HttpHeadersWithStreamId) msg;
-
                 if (objectWithStreamId.streamId == streamId) {
                     onHeaders.accept(objectWithStreamId.httpHeaders, objectWithStreamId.noMoreContent);
                 } else {
@@ -225,7 +272,6 @@ public class AsyncHttpClient implements Closeable {
                 }
             } else if (msg instanceof HttpContentWithStreamId) {
                 final HttpContentWithStreamId objectWithStreamId = (HttpContentWithStreamId) msg;
-
                 if (objectWithStreamId.streamId == streamId) {
                     onContent.accept(objectWithStreamId.httpContent, objectWithStreamId.noMoreContent);
                 } else {
@@ -233,11 +279,9 @@ public class AsyncHttpClient implements Closeable {
                 }
             } else if (msg instanceof FullHttpResponse) {
                 final FullHttpResponse fullHttpResponse = (FullHttpResponse) msg;
-
-                final HttpHeaders headers = fullHttpResponse.headers();
-                final int responseStreamId = headers.getInt(streamIdHeaderName);
+                final int responseStreamId = fullHttpResponse.headers().getInt(streamIdHeaderName);
                 if (responseStreamId == streamId) {
-                    promise.setSuccess(fullHttpResponse);
+                    promise.trySuccess(fullHttpResponse);
                 } else {
                     ctx.fireChannelRead(fullHttpResponse.retain());
                 }
@@ -246,9 +290,7 @@ public class AsyncHttpClient implements Closeable {
 
         @Override
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
-            if (!promise.isDone()) {
-                promise.setFailure(cause);
-            }
+            promise.tryFailure(cause);
         }
     }
 
@@ -266,11 +308,15 @@ public class AsyncHttpClient implements Closeable {
                             ApplicationProtocolConfig.SelectorFailureBehavior.NO_ADVERTISE,
                             // ACCEPT is currently the only mode supported by both OpenSsl and JDK providers.
                             ApplicationProtocolConfig.SelectedListenerFailureBehavior.ACCEPT,
-                            ApplicationProtocolNames.HTTP_2))
+                            version == Version.HTTP_2 ? ApplicationProtocolNames.HTTP_2 : ApplicationProtocolNames.HTTP_1_1))
                     .build();
             return sslCtx.newHandler(channel.alloc());
         } catch (SSLException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    private int getNextStreamId() {
+        return streamIdCounter.getAndAdd(2);
     }
 }

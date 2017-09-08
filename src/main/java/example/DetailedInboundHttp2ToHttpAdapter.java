@@ -27,13 +27,10 @@ public class DetailedInboundHttp2ToHttpAdapter extends InboundHttp2ToHttpAdapter
     public void onHeadersRead(ChannelHandlerContext ctx, int streamId, Http2Headers headers, int padding, boolean endOfStream) throws Http2Exception {
         super.onHeadersRead(ctx, streamId, headers, padding, endOfStream);
         final FullHttpResponse fullHttpResponse = HttpConversionUtil.toHttpResponse(streamId, headers, ByteBufAllocator.DEFAULT, false);
-
         final HttpResponse httpResponse = new DefaultHttpResponse(fullHttpResponse.protocolVersion(), fullHttpResponse.status());
         ctx.fireChannelRead(new HttpResponseWithStreamId(httpResponse, streamId));
-
         final HttpHeaders httpHeaders = fullHttpResponse.headers();
         ctx.fireChannelRead(new HttpHeadersWithStreamId(httpHeaders, streamId, endOfStream));
-
         ctx.flush();
     }
 
@@ -47,7 +44,6 @@ public class DetailedInboundHttp2ToHttpAdapter extends InboundHttp2ToHttpAdapter
         final DefaultHttpContent httpContent = endOfStream ? new DefaultLastHttpContent(data.retain()) : new DefaultHttpContent(data.retain());
         ctx.fireChannelRead(new HttpContentWithStreamId(httpContent, streamId, endOfStream));
         ctx.flush();
-
         return super.onDataRead(ctx, streamId, data, padding, endOfStream);
     }
 }
