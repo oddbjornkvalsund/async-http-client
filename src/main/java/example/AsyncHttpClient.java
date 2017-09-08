@@ -4,10 +4,8 @@ import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
-import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelPipeline;
-import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
@@ -19,10 +17,8 @@ import io.netty.handler.codec.http.HttpContentDecompressor;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpMethod;
-import io.netty.handler.codec.http.HttpObject;
 import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.codec.http.HttpVersion;
-import io.netty.handler.codec.http.LastHttpContent;
 import io.netty.handler.codec.http2.DefaultHttp2Connection;
 import io.netty.handler.codec.http2.DelegatingDecompressorFrameListener;
 import io.netty.handler.codec.http2.Http2FrameLogger;
@@ -65,7 +61,6 @@ public class AsyncHttpClient implements Closeable {
 
     private final static int maxContentLength = 10 * 1024 * 1024;
     private final static AsciiString schemeHeaderName = HttpConversionUtil.ExtensionHeaderNames.SCHEME.text();
-    private final static AsciiString streamIdHeaderName = HttpConversionUtil.ExtensionHeaderNames.STREAM_ID.text();
 
     private final NioEventLoopGroup group;
     private final Channel channel;
@@ -192,7 +187,7 @@ public class AsyncHttpClient implements Closeable {
         final Promise<FullHttpResponse> promise = channel.pipeline().firstContext().executor().newPromise();
 
         if (version == Version.HTTP_1_1) {
-            channel.pipeline().addLast(new Http1ResponseHandler(onResponse, onHeaders, onContent, promise));
+            channel.pipeline().addLast(new Http1ResponseHandler(channel, onResponse, onHeaders, onContent, promise));
             channel.writeAndFlush(req).addListener(FIRE_EXCEPTION_ON_FAILURE).syncUninterruptibly();
             return promise.syncUninterruptibly();
         } else {
@@ -209,98 +204,6 @@ public class AsyncHttpClient implements Closeable {
             group.shutdownGracefully(0, 100, MILLISECONDS);
         } catch (InterruptedException e) {
             throw new IOException("Interrupted while closing channel!", e);
-        }
-    }
-
-    class Http1ResponseHandler extends SimpleChannelInboundHandler<HttpObject> {
-
-        private final Consumer<HttpResponse> onResponse;
-        private final BiConsumer<HttpHeaders, Boolean> onHeaders;
-        private final BiConsumer<HttpContent, Boolean> onContent;
-        private final Promise<FullHttpResponse> promise;
-
-        Http1ResponseHandler(Consumer<HttpResponse> onResponse, BiConsumer<HttpHeaders, Boolean> onHeaders, BiConsumer<HttpContent, Boolean> onContent, Promise<FullHttpResponse> promise) {
-            this.onResponse = onResponse;
-            this.onHeaders = onHeaders;
-            this.onContent = onContent;
-            this.promise = promise;
-        }
-
-        @Override
-        protected void channelRead0(ChannelHandlerContext ctx, HttpObject msg) throws Exception {
-            if (msg instanceof FullHttpResponse) {
-                final FullHttpResponse fullHttpResponse = (FullHttpResponse) msg;
-                channel.pipeline().remove(this);
-                promise.setSuccess(fullHttpResponse); // retain?
-            } else if (msg instanceof HttpResponse) {
-                final HttpResponse httpResponse = (HttpResponse) msg;
-                onResponse.accept(httpResponse);
-            } else if (msg instanceof HttpHeaders) {
-                final HttpHeaders httpHeaders = (HttpHeaders) msg;
-                onHeaders.accept(httpHeaders, true);
-            } else if (msg instanceof LastHttpContent) {
-                final LastHttpContent lastHttpContent = (LastHttpContent) msg;
-                onContent.accept(lastHttpContent, true);
-            } else if (msg instanceof HttpContent) {
-                final HttpContent httpContent = (HttpContent) msg;
-                onContent.accept(httpContent, false);
-            }
-        }
-    }
-
-    class Http2ResponseHandler extends SimpleChannelInboundHandler<Object> {
-
-        private final int streamId;
-        private final Consumer<HttpResponse> onResponse;
-        private final BiConsumer<HttpHeaders, Boolean> onHeaders;
-        private final BiConsumer<HttpContent, Boolean> onContent;
-        private final Promise<FullHttpResponse> promise;
-
-        Http2ResponseHandler(int streamId, Consumer<HttpResponse> onResponse, BiConsumer<HttpHeaders, Boolean> onHeaders, BiConsumer<HttpContent, Boolean> onContent, Promise<FullHttpResponse> promise) {
-            this.streamId = streamId;
-            this.onResponse = onResponse;
-            this.onHeaders = onHeaders;
-            this.onContent = onContent;
-            this.promise = promise;
-        }
-
-        @Override
-        protected void channelRead0(ChannelHandlerContext ctx, Object msg) throws Exception {
-            if (msg instanceof HttpResponseWithStreamId) {
-                final HttpResponseWithStreamId objectWithStreamId = (HttpResponseWithStreamId) msg;
-                if (objectWithStreamId.streamId == streamId) {
-                    onResponse.accept(objectWithStreamId.httpResponse);
-                } else {
-                    ctx.fireChannelRead(msg);
-                }
-            } else if (msg instanceof HttpHeadersWithStreamId) {
-                final HttpHeadersWithStreamId objectWithStreamId = (HttpHeadersWithStreamId) msg;
-                if (objectWithStreamId.streamId == streamId) {
-                    onHeaders.accept(objectWithStreamId.httpHeaders, objectWithStreamId.noMoreContent);
-                } else {
-                    ctx.fireChannelRead(msg);
-                }
-            } else if (msg instanceof HttpContentWithStreamId) {
-                final HttpContentWithStreamId objectWithStreamId = (HttpContentWithStreamId) msg;
-                if (objectWithStreamId.streamId == streamId) {
-                    onContent.accept(objectWithStreamId.httpContent, objectWithStreamId.noMoreContent);
-                } else {
-                    ctx.fireChannelRead(msg);
-                }
-            } else if (msg instanceof FullHttpResponse) {
-                final FullHttpResponse fullHttpResponse = (FullHttpResponse) msg;
-                final int responseStreamId = fullHttpResponse.headers().getInt(streamIdHeaderName);
-                if (responseStreamId == streamId) {
-                    promise.trySuccess(fullHttpResponse);
-                } else {
-                    ctx.fireChannelRead(fullHttpResponse.retain());
-                }
-            }
-        }
-
-        @Override
-        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
-            promise.tryFailure(cause);
         }
     }
 
