@@ -15,10 +15,6 @@ public class HttpContentWithStreamId {
 
     @Override
     public String toString() {
-        return "HttpContentWithStreamId{" +
-                "streamId=" + streamId +
-                ", httpContent=" + httpContent +
-                ", noMoreContent=" + noMoreContent +
-                '}';
+        return String.format("HttpContentWithStreamId{streamId=%d, httpContent=%s, noMoreContent=%s}", streamId, httpContent, noMoreContent);
     }
 }

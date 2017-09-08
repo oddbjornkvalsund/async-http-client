@@ -23,13 +23,13 @@ public class DetailedInboundHttp2ToHttpAdapter extends InboundHttp2ToHttpAdapter
 
     @Override
     public void onHeadersRead(ChannelHandlerContext ctx, int streamId, Http2Headers headers, int padding, boolean endOfStream) throws Http2Exception {
-        super.onHeadersRead(ctx, streamId, headers, padding, endOfStream);
         final FullHttpResponse fullHttpResponse = HttpConversionUtil.toHttpResponse(streamId, headers, ByteBufAllocator.DEFAULT, false);
         final HttpResponse httpResponse = new DefaultHttpResponse(fullHttpResponse.protocolVersion(), fullHttpResponse.status());
         ctx.fireChannelRead(new HttpResponseWithStreamId(httpResponse, streamId));
         final HttpHeaders httpHeaders = fullHttpResponse.headers();
         ctx.fireChannelRead(new HttpHeadersWithStreamId(httpHeaders, streamId, endOfStream));
         ctx.flush();
+        super.onHeadersRead(ctx, streamId, headers, padding, endOfStream);
     }
 
     @Override

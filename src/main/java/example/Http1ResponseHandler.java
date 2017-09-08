@@ -35,7 +35,7 @@ public class Http1ResponseHandler extends SimpleChannelInboundHandler<HttpObject
         if (msg instanceof FullHttpResponse) {
             final FullHttpResponse fullHttpResponse = (FullHttpResponse) msg;
             channel.pipeline().remove(this);
-            promise.setSuccess(fullHttpResponse); // retain?
+            promise.setSuccess(fullHttpResponse);
         } else if (msg instanceof HttpResponse) {
             final HttpResponse httpResponse = (HttpResponse) msg;
             onResponse.accept(httpResponse);
@@ -49,5 +49,10 @@ public class Http1ResponseHandler extends SimpleChannelInboundHandler<HttpObject
             final HttpContent httpContent = (HttpContent) msg;
             onContent.accept(httpContent, false);
         }
+    }
+
+    @Override
+    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+        promise.tryFailure(cause);
     }
 }

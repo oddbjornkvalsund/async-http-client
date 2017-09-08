@@ -15,10 +15,6 @@ public class HttpHeadersWithStreamId {
 
     @Override
     public String toString() {
-        return "HttpHeadersWithStreamId{" +
-                "streamId=" + streamId +
-                ", httpHeaders=" + httpHeaders +
-                ", noMoreContent=" + noMoreContent +
-                '}';
+        return String.format("HttpHeadersWithStreamId{streamId=%d, httpHeaders=%s, noMoreContent=%s}", streamId, httpHeaders, noMoreContent);
     }
 }

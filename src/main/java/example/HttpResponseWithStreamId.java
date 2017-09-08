@@ -13,9 +13,6 @@ public class HttpResponseWithStreamId {
 
     @Override
     public String toString() {
-        return "HttpResponseWithStreamId{" +
-                "streamId=" + streamId +
-                ", httpResponse=" + httpResponse +
-                '}';
+        return String.format("HttpResponseWithStreamId{streamId=%d, httpResponse=%s}", streamId, httpResponse);
     }
 }

@@ -74,7 +74,7 @@ public class AsyncHttpClient implements Closeable {
         final byte[] emptyBody = new byte[0];
         for (Version version : Version.values()) {
             try (final AsyncHttpClient client = new AsyncHttpClient(version, "google.com", 443, true, true)) {
-                final Promise<FullHttpResponse> future1 = client.run("GET", "/", emptyMap(), emptyBody,
+                final Promise<FullHttpResponse> promise1 = client.run("GET", "/", emptyMap(), emptyBody,
                         response -> {
                             System.out.format("Got %s response for GET /: %s\n", version, response);
                         },
@@ -88,25 +88,8 @@ public class AsyncHttpClient implements Closeable {
                         }
                 );
 
-                final Promise<FullHttpResponse> future2 = client.run("GET", "/foo", emptyMap(), emptyBody,
-                        response -> {
-                            System.out.format("Got %s response for GET /foo: %s\n", version, response);
-                        },
-                        (headers, isLast) -> {
-                            System.out.format("Got %s headers for GET /foo: %s\n", version, headers);
-                            System.out.format("Got %s headers.isLast for GET /foo: %s\n", version, isLast);
-                        },
-                        (content, isLast) -> {
-                            System.out.format("Got %s content for GET /foo: %s\n", version, content);
-                            System.out.format("Got %s content.isLast for GET /foo: %s\n", version, isLast);
-                        }
-                );
-
-                final Promise<FullHttpResponse> result1 = future1.sync();
+                final Promise<FullHttpResponse> result1 = promise1.sync();
                 System.out.format("Got %s full content for GET /: %s\n", version, result1.getNow());
-
-                final Promise<FullHttpResponse> result2 = future2.sync();
-                System.out.format("Got %s full content for GET /foo: %s\n", version, result2.getNow());
             }
         }
     }
@@ -140,12 +123,10 @@ public class AsyncHttpClient implements Closeable {
                                 pipeline.addLast(new HttpContentDecompressor());
                             }
                         } else if (version == Version.HTTP_2) {
-                            final Http2FrameLogger frameLogger = new Http2FrameLogger(INFO, AsyncHttpClient.class);
                             final DefaultHttp2Connection connection = new DefaultHttp2Connection(false);
                             final InboundHttp2ToHttpAdapter adapter = new DetailedInboundHttp2ToHttpAdapter(connection, maxContentLength);
                             final HttpToHttp2ConnectionHandler connectionHandler = new HttpToHttp2ConnectionHandlerBuilder()
                                     .frameListener(decompressBody ? new DelegatingDecompressorFrameListener(connection, adapter) : adapter)
-                                    .frameLogger(frameLogger)
                                     .connection(connection)
                                     .build();
 
