@@ -63,19 +63,21 @@ public class AsyncHttpClient implements Closeable {
         HTTP_2
     }
 
+    private final static AsciiString schemeHeaderName = HttpConversionUtil.ExtensionHeaderNames.SCHEME.text();
     private final static AsciiString streamIdHeaderName = HttpConversionUtil.ExtensionHeaderNames.STREAM_ID.text();
 
     private final NioEventLoopGroup group;
     private final Channel channel;
     private final Version version;
     private final String host;
+    private final boolean useSSL;
 
     private AtomicInteger streamIdCounter = new AtomicInteger(3);
 
     public static void main(String[] args) throws InterruptedException, IOException {
         final byte[] emptyBody = new byte[0];
         for (Version version : Version.values()) {
-            try (final AsyncHttpClient client = new AsyncHttpClient(version, "google.com", 443, true)) {
+            try (final AsyncHttpClient client = new AsyncHttpClient(version, "google.com", 443, true, true)) {
                 final Promise<FullHttpResponse> future1 = client.run("GET", "/", emptyMap(), emptyBody,
                         response -> {
                             System.out.format("Got %s response for GET /: %s\n", version, response);
@@ -113,10 +115,15 @@ public class AsyncHttpClient implements Closeable {
         }
     }
 
-    public AsyncHttpClient(Version version, String host, int port, boolean decompressBody) {
+    public AsyncHttpClient(Version version, String host, int port, boolean useSSL, boolean decompressBody) {
         this.version = version;
         this.host = host;
+        this.useSSL = useSSL;
         this.group = new NioEventLoopGroup();
+
+        if (version == Version.HTTP_2 && !useSSL) {
+            throw new IllegalArgumentException("HTTP/2 only supported over SSL!");
+        }
 
         final Bootstrap bootstrap = new Bootstrap()
                 .group(group)
@@ -126,8 +133,11 @@ public class AsyncHttpClient implements Closeable {
                     protected void initChannel(SocketChannel ch) throws Exception {
                         final ChannelPipeline pipeline = ch.pipeline();
 
+                        if (useSSL) {
+                            pipeline.addFirst(createSslHandler(ch));
+                        }
+
                         if (version == Version.HTTP_1_1) {
-                            pipeline.addLast(createSslHandler(ch));
                             pipeline.addLast(new HttpClientCodec());
                             pipeline.addLast(new DetailedHttpObjectAggregator(10 * 1024 * 1024));
                             if (decompressBody) {
@@ -143,7 +153,6 @@ public class AsyncHttpClient implements Closeable {
                                     .connection(connection)
                                     .build();
 
-                            pipeline.addLast(createSslHandler(ch));
                             pipeline.addLast(connectionHandler);
                         }
                     }
@@ -173,7 +182,7 @@ public class AsyncHttpClient implements Closeable {
         final HttpHeaders headers = req.headers();
         headers.add(HttpHeaderNames.HOST, this.host);
         headers.add(HttpHeaderNames.CONTENT_LENGTH, body.length);
-        headers.add(HttpConversionUtil.ExtensionHeaderNames.SCHEME.text(), "https");
+        headers.add(schemeHeaderName, useSSL ? "https" : "http");
 
         for (Map.Entry<String, String> header : headerMap.entrySet()) {
             headers.add(header.getKey(), header.getValue());
